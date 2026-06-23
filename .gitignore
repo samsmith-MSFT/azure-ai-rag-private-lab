@@ -1,0 +1,6 @@
+.env
+*.bicepparam.local
+*.pem
+*.pfx
+*passw[o]rd*
+.vscode/settings.json

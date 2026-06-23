@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Azure AI RAG - Private Architecture</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem('theme');
+    const dark = saved ? saved === 'dark' : true;
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #FAF9F5; --surface: #FFFFFF; --surface2: #F0EEE6;
+    --ink: #141413; --body: #3D3D3A; --muted: #87867F;
+    --line: #D1CFC5; --line-soft: #E6E3DA;
+    --clay: #D97757; --clay-soft: rgba(217,119,87,0.10);
+    --olive: #788C5D; --olive-soft: rgba(120,140,93,0.12);
+    --gold: #C9A45C; --blue: #5B7E96;
+    --go: #2DA06C; --stop: #C0392B;
+    --flow: var(--blue);
+    --zone: rgba(20,20,19,0.025); --zone-line: #D1CFC5;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html.dark {
+    --bg: #141413; --surface: #1F1F1D; --surface2: #2A2A28;
+    --ink: #FAF9F5; --body: #D1CFC5; --muted: #87867F;
+    --line: #3D3D3A; --line-soft: #2A2A28;
+    --clay: #E48A6E; --clay-soft: rgba(228,138,110,0.14);
+    --olive: #9DB07C; --olive-soft: rgba(157,176,124,0.16);
+    --gold: #D4B36F; --blue: #7FA3BC;
+    --go: #5DCB95; --stop: #E66B5C;
+    --flow: var(--blue);
+    --zone: rgba(250,249,245,0.03); --zone-line: #3D3D3A;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--body); font-family: var(--sans);
+    -webkit-font-smoothing: antialiased; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  .bar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--line-soft); flex: none;
+  }
+  .bar h1 { font-family: var(--serif); font-weight: 500; font-size: 19px; color: var(--ink); letter-spacing: -0.01em; }
+  .bar .sub { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+  .spacer { flex: 1; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+    padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px;
+    background: transparent; color: var(--muted); cursor: pointer; transition: all .15s ease;
+  }
+  .chip:hover { color: var(--ink); border-color: var(--muted); }
+  .chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  #themeToggle {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer;
+  }
+  #themeToggle:hover { color: var(--ink); border-color: var(--muted); }
+
+  .stage { flex: 1; position: relative; min-height: 0; }
+  .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .zone rect { fill: var(--zone); stroke: var(--zone-line); stroke-width: 1; stroke-dasharray: 5 5; rx: 14; }
+  .zone .ztitle { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; fill: var(--muted); }
+  .zone .zsub { font-family: var(--mono); font-size: 10px; fill: var(--muted); opacity: 0.75; }
+
+  .node { cursor: pointer; }
+  .node rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; rx: 9; transition: stroke .15s ease, filter .15s ease; }
+  .node:hover rect { stroke: var(--muted); }
+  .node.sel rect { stroke: var(--clay) !important; stroke-width: 2; }
+  .node .t  { font-family: var(--sans); font-size: 13.5px; font-weight: 600; fill: var(--ink); pointer-events: none; }
+  .node .m  { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); pointer-events: none; }
+  .node .k  { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; fill: var(--clay); pointer-events: none; }
+  .node.gate rect { fill: var(--clay-soft); stroke: var(--clay); }
+  .node.store rect { fill: var(--surface2); }
+  .node.compute rect { fill: var(--olive-soft); stroke: var(--olive); }
+  .node.ai rect { fill: rgba(91, 126, 150, 0.10); stroke: var(--blue); }
+  .node.ext rect { stroke-dasharray: 6 3; }
+
+  #a-mut path { fill: var(--muted); }
+  #a-flow path { fill: var(--flow); }
+
+  .edge {
+    stroke: var(--muted); stroke-width: 1.4; fill: none;
+    marker-end: url(#a-mut); opacity: 0;
+    transition: opacity .25s ease, stroke .2s ease;
+  }
+  .edge.dash { stroke-dasharray: 5 4; }
+  .elbl {
+    font-family: var(--mono); font-size: 10px; fill: var(--muted);
+    opacity: 0; transition: opacity .25s ease, fill .2s ease;
+  }
+
+  .stage.flowing .node { opacity: 0.35; transition: opacity .25s ease; }
+  .stage.flowing .zone { opacity: 0.55; transition: opacity .25s ease; }
+  .stage.flowing .edge.lit {
+    opacity: 1; stroke: var(--flow); marker-end: url(#a-flow);
+    stroke-dasharray: 7 5; animation: march 0.9s linear infinite;
+  }
+  .stage.flowing .elbl.lit { opacity: 1; fill: var(--flow); }
+  .stage.flowing .node.lit { opacity: 1; }
+  .stage.flowing .node.lit rect { stroke: var(--flow); }
+
+  .stage.flowing.tone-go { --flow: var(--go); }
+  .stage.flowing.tone-olive { --flow: var(--olive); }
+  .stage.flowing.tone-gold { --flow: var(--gold); }
+  .stage.flowing.tone-stop { --flow: var(--stop); }
+
+  @keyframes march { to { stroke-dashoffset: -12; } }
+  @media (prefers-reduced-motion: reduce) { .stage.flowing .edge.lit { animation: none; } }
+
+  .card {
+    position: absolute; max-width: 360px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; box-shadow: 0 6px 24px rgba(0,0,0,0.08);
+  }
+  #detail { right: 16px; top: 80px; width: 340px; display: none; }
+  #detail.show { display: block; }
+  #detail h3 { font-family: var(--serif); font-weight: 500; font-size: 17px; color: var(--ink); margin-bottom: 2px; }
+  #detail .meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-bottom: 8px; }
+  #detail p { font-size: 12.5px; line-height: 1.55; }
+  #detail p code, #flowcap code { font-family: var(--mono); font-size: 11px; color: var(--clay); }
+  #flowcap { left: 16px; bottom: 16px; max-width: 520px; display: none; }
+  #flowcap.show { display: block; }
+  #flowcap .fname { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--flow); margin-bottom: 6px; }
+  #flowcap ol { margin-left: 18px; }
+  #flowcap li { font-size: 12.5px; line-height: 1.5; }
+
+  @media (max-width: 880px) {
+    body { overflow: auto; }
+    .stage { min-height: 70vh; }
+    #detail { position: static; width: auto; margin: 10px 16px; }
+    #flowcap { position: static; margin: 0 16px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div>
+    <h1>Azure AI RAG - privatized</h1>
+    <div class="sub">17 services · 1 hub VNet · public network access: disabled</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-flow="all">All</button>
+    <button class="chip" data-flow="ingest">Ingest</button>
+    <button class="chip" data-flow="query">Query</button>
+    <button class="chip" data-flow="secrets">Secrets &amp; config</button>
+    <button class="chip" data-flow="telemetry">Telemetry</button>
+  </div>
+  <button id="themeToggle">Theme</button>
+</div>
+
+<div class="stage" id="stage">
+<svg viewBox="0 0 1700 940" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Privatized Azure AI RAG architecture">
+  <defs>
+    <marker id="a-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="a-flow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <!-- zones -->
+  <g class="zone" id="z-users">
+    <rect x="20" y="80" width="240" height="820"/>
+    <text class="ztitle" x="40" y="108">External users</text>
+    <text class="zsub" x="40" y="124">Public internet</text>
+  </g>
+
+  <g class="zone" id="z-channel">
+    <rect x="280" y="100" width="240" height="400"/>
+    <text class="ztitle" x="300" y="128">Bot channel</text>
+    <text class="zsub" x="300" y="144">Microsoft-managed</text>
+  </g>
+
+  <g class="zone" id="z-vnet">
+    <rect x="540" y="80" width="720" height="820"/>
+    <text class="ztitle" x="560" y="108">Hub virtual network</text>
+    <text class="zsub" x="560" y="124">snet-app · snet-pe · snet-foundry · snet-egress</text>
+  </g>
+
+  <g class="zone" id="z-compute">
+    <rect x="560" y="150" width="680" height="200"/>
+    <text class="ztitle" x="580" y="174">Compute subnet - VNet integrated</text>
+  </g>
+
+  <g class="zone" id="z-pe">
+    <rect x="560" y="380" width="320" height="320"/>
+    <text class="ztitle" x="580" y="404">Private endpoint subnet</text>
+    <text class="zsub" x="580" y="420">PEs for every PaaS dependency</text>
+  </g>
+
+  <g class="zone" id="z-foundry">
+    <rect x="920" y="380" width="320" height="320"/>
+    <text class="ztitle" x="940" y="404">Foundry agent subnet - delegated</text>
+  </g>
+
+  <g class="zone" id="z-egress">
+    <rect x="560" y="730" width="680" height="140"/>
+    <text class="ztitle" x="580" y="754">Egress subnet</text>
+  </g>
+
+  <g class="zone" id="z-paas">
+    <rect x="1280" y="80" width="280" height="820"/>
+    <text class="ztitle" x="1300" y="108">Azure PaaS</text>
+    <text class="zsub" x="1300" y="124">publicNetworkAccess = Disabled · PE only</text>
+  </g>
+
+  <g class="zone" id="z-saas">
+    <rect x="1580" y="80" width="110" height="220"/>
+    <text class="ztitle" x="1595" y="108">SaaS</text>
+    <text class="zsub" x="1595" y="124">Multi-tenant</text>
+  </g>
+
+  <!-- edges (hidden by default) -->
+  <!-- INGEST -->
+  <path class="edge" id="e-fn-nat"     d="M1070,322 C 980,370 900,440 900,540 C 900,680 900,720 905,748"/>
+  <path class="edge" id="e-nat-spo"    d="M1240,795 C 1410,795 1632,420 1632,210"/>
+  <path class="edge" id="e-fn-blob"    d="M1240,265 C 1262,280 1280,318 1295,335"/>
+  <path class="edge" id="e-fn-doc"     d="M1240,295 C 1262,360 1280,480 1295,508"/>
+  <path class="edge" id="e-fn-search"  d="M1240,235 C 1262,210 1280,185 1295,170"/>
+  <path class="edge dash" id="e-search-blob" d="M1545,170 C 1640,180 1640,335 1545,335"/>
+
+  <!-- QUERY -->
+  <path class="edge" id="e-user-bf"  d="M250,210 C 270,210 282,180 300,180"/>
+  <path class="edge" id="e-bf-bs"    d="M395,250 C 395,290 395,300 395,340"/>
+  <path class="edge" id="e-bs-app"   d="M495,370 C 540,370 555,295 580,265"/>
+  <path class="edge" id="e-app-fa"   d="M790,322 C 790,360 1010,378 1010,418"/>
+  <path class="edge" id="e-fa-foundry" d="M1170,455 C 1230,448 1262,418 1295,412"/>
+  <path class="edge" id="e-fa-search"  d="M1170,432 C 1230,418 1265,210 1295,170"/>
+  <path class="edge" id="e-fa-cosmos"  d="M1170,460 C 1232,440 1265,265 1295,255"/>
+  <path class="edge" id="e-fa-blob"    d="M1170,490 C 1232,470 1265,348 1295,338"/>
+
+  <!-- SECRETS & config -->
+  <path class="edge" id="e-app-kv"      d="M790,300 C 1080,300 1180,600 1295,605"/>
+  <path class="edge" id="e-fn-kv"       d="M1100,322 C 1180,430 1240,600 1295,610"/>
+  <path class="edge" id="e-app-appconf" d="M790,312 C 1080,312 1180,695 1295,698"/>
+  <path class="edge" id="e-fn-appconf"  d="M1100,322 C 1180,460 1240,700 1295,703"/>
+
+  <!-- TELEMETRY -->
+  <path class="edge" id="e-app-mon"     d="M790,322 C 1080,330 1180,790 1295,795"/>
+  <path class="edge" id="e-fn-mon"      d="M1100,322 C 1180,460 1240,795 1295,800"/>
+  <path class="edge" id="e-fa-mon"      d="M1170,565 C 1230,650 1260,795 1295,805"/>
+
+  <!-- edge labels - minimal set; flow caption carries the explanation -->
+  <text class="elbl" data-e="e-bf-bs"       x="410" y="298" text-anchor="start">channel</text>
+  <text class="elbl" data-e="e-fn-nat"      x="890" y="540" text-anchor="end">egress</text>
+
+  <!-- nodes -->
+  <g class="node" data-k="user">
+    <rect x="40" y="178" width="210" height="80"/>
+    <text class="t" x="56" y="206">Teams user</text>
+    <text class="m" x="56" y="228">Microsoft Teams client</text>
+    <text class="k" x="56" y="248">public · accepted</text>
+  </g>
+  <g class="node" data-k="admin">
+    <rect x="40" y="780" width="210" height="100"/>
+    <text class="t" x="56" y="808">Operators</text>
+    <text class="m" x="56" y="830">Azure Bastion</text>
+    <text class="m" x="56" y="846">or Entra Private Access</text>
+    <text class="k" x="56" y="868">jumpbox only</text>
+  </g>
+
+  <g class="node ext" data-k="bf">
+    <rect x="300" y="160" width="190" height="100"/>
+    <text class="t" x="316" y="188">Bot Framework</text>
+    <text class="m" x="316" y="210">Microsoft-managed</text>
+    <text class="m" x="316" y="226">connector</text>
+    <text class="k" x="316" y="248">public · required for teams</text>
+  </g>
+  <g class="node" data-k="bs">
+    <rect x="300" y="340" width="190" height="100"/>
+    <text class="t" x="316" y="368">Azure Bot Service</text>
+    <text class="m" x="316" y="390">publicNetworkAccess</text>
+    <text class="m" x="316" y="406">= Disabled</text>
+    <text class="k" x="316" y="428">teams channel · MI</text>
+  </g>
+
+  <g class="node compute" data-k="app">
+    <rect x="580" y="190" width="300" height="130"/>
+    <text class="t" x="600" y="218">App Service / Container Apps</text>
+    <text class="m" x="600" y="240">Bot frontend</text>
+    <text class="m" x="600" y="258">VNet integrated · PE inbound</text>
+    <text class="m" x="600" y="276">Managed Identity · Easy Auth</text>
+    <text class="k" x="600" y="302">private only</text>
+  </g>
+  <g class="node compute" data-k="fn">
+    <rect x="920" y="190" width="300" height="130"/>
+    <text class="t" x="940" y="218">Azure Functions (Premium)</text>
+    <text class="m" x="940" y="240">SharePoint ingestion</text>
+    <text class="m" x="940" y="258">VNet integrated · PE inbound</text>
+    <text class="m" x="940" y="276">WEBSITE_VNET_ROUTE_ALL = 1</text>
+    <text class="k" x="940" y="302">private only</text>
+  </g>
+
+  <g class="node ai" data-k="fa">
+    <rect x="950" y="420" width="220" height="270"/>
+    <text class="t" x="966" y="448">Foundry Agent</text>
+    <text class="m" x="966" y="470">Standard setup</text>
+    <text class="m" x="966" y="486">BYO VNet · delegated</text>
+    <text class="m" x="966" y="510">Capability hosts →</text>
+    <text class="m" x="966" y="526">  Storage (threads)</text>
+    <text class="m" x="966" y="542">  Cosmos (state)</text>
+    <text class="m" x="966" y="558">  AI Search (RAG)</text>
+    <text class="k" x="966" y="582">isolated agent</text>
+  </g>
+
+  <g class="node" data-k="nat">
+    <rect x="600" y="760" width="620" height="80"/>
+    <text class="t" x="620" y="788">NAT Gateway / Azure Firewall</text>
+    <text class="m" x="620" y="810">Deterministic egress · M365 service tag allow-list</text>
+    <text class="k" x="620" y="828">only path off-VNet</text>
+  </g>
+
+  <!-- PaaS column (taller, narrower) -->
+  <g class="node store" data-k="search">
+    <rect x="1295" y="135" width="250" height="78"/>
+    <text class="t" x="1311" y="160">Azure AI Search</text>
+    <text class="m" x="1311" y="180">PE · S2+ tier</text>
+    <text class="m" x="1311" y="196">indexer = Private</text>
+  </g>
+  <g class="node store" data-k="cosmos">
+    <rect x="1295" y="225" width="250" height="65"/>
+    <text class="t" x="1311" y="250">Azure Cosmos DB</text>
+    <text class="m" x="1311" y="270">PE · disableLocalAuth · MI</text>
+  </g>
+  <g class="node store" data-k="blob">
+    <rect x="1295" y="302" width="250" height="78"/>
+    <text class="t" x="1311" y="327">Blob Storage</text>
+    <text class="m" x="1311" y="347">PE per sub-resource</text>
+    <text class="m" x="1311" y="363">no shared keys · MI</text>
+  </g>
+  <g class="node ai" data-k="foundry">
+    <rect x="1295" y="392" width="250" height="65"/>
+    <text class="t" x="1311" y="417">AI Foundry / Azure OpenAI</text>
+    <text class="m" x="1311" y="437">PE · MI · keys disabled</text>
+  </g>
+  <g class="node ai" data-k="doc">
+    <rect x="1295" y="469" width="250" height="78"/>
+    <text class="t" x="1311" y="494">Document Intelligence</text>
+    <text class="m" x="1311" y="514">PE · MI</text>
+    <text class="m" x="1311" y="530">Foundry isolation</text>
+  </g>
+  <g class="node gate" data-k="kv">
+    <rect x="1295" y="559" width="250" height="78"/>
+    <text class="t" x="1311" y="584">Key Vault</text>
+    <text class="m" x="1311" y="604">PE · RBAC mode</text>
+    <text class="m" x="1311" y="620">trusted services bypass</text>
+  </g>
+  <g class="node" data-k="appconf">
+    <rect x="1295" y="649" width="250" height="65"/>
+    <text class="t" x="1311" y="674">App Configuration</text>
+    <text class="m" x="1311" y="694">PE · keys disabled · MI</text>
+  </g>
+  <g class="node" data-k="mon">
+    <rect x="1295" y="726" width="250" height="100"/>
+    <text class="t" x="1311" y="751">App Insights + Log Analytics</text>
+    <text class="m" x="1311" y="771">Workspace-based AI</text>
+    <text class="m" x="1311" y="787">AMPLS · Private Only</text>
+    <text class="m" x="1311" y="803">ingest + query private</text>
+  </g>
+
+  <!-- SaaS column -->
+  <g class="node ext" data-k="spo">
+    <rect x="1592" y="138" width="90" height="140"/>
+    <text class="t" x="1604" y="166">SharePoint</text>
+    <text class="t" x="1604" y="184">Online</text>
+    <text class="m" x="1604" y="208">Multi-tenant</text>
+    <text class="m" x="1604" y="224">SaaS</text>
+    <text class="m" x="1604" y="244">No Private</text>
+    <text class="m" x="1604" y="260">Link</text>
+  </g>
+
+</svg>
+
+<aside class="card" id="detail">
+  <h3 id="d-title">Click a node</h3>
+  <div class="meta" id="d-meta">Click any chip to highlight a flow · click any node for details</div>
+  <p id="d-body">Privatized topology of the AI RAG architecture in <code>this repository</code>. Every Azure PaaS service has public network access disabled and is reached via a private endpoint from the hub VNet. Bot Framework and SharePoint Online are the only public surfaces - both multi-tenant Microsoft SaaS, both accepted exposures.</p>
+</aside>
+
+<aside class="card" id="flowcap">
+  <div class="fname" id="f-name"></div>
+  <ol id="f-steps"></ol>
+</aside>
+</div>
+
+<script>
+const DETAIL = {
+  user: { t: "Teams user", m: "Microsoft Teams · public", b: "Client connects to Teams. Out of scope for private networking - accepted exposure. The Teams channel is the one user-facing path that cannot be made private." },
+  admin: { t: "Operators", m: "Bastion · Entra Private Access", b: "Operators reach the Foundry portal, App Service Kudu, Functions code, and Cosmos data explorer via a jumpbox or Entra Private Access. Direct internet management is blocked by RBAC and Conditional Access." },
+  bf: { t: "Bot Framework connector", m: "Microsoft-managed · PUBLIC", b: "Multi-tenant Microsoft-managed service. The Teams channel requires it. Mitigations: validate the BF JWT on the messaging endpoint and restrict to Bot Framework egress IPs." },
+  bs: { t: "Azure Bot Service", m: "publicNetworkAccess = Disabled", b: "Resource-level public access is disabled (<code>dl-network-isolation-how-to</code>). Routes the Teams channel into the bot via the messaging endpoint, authenticating with the bot's Managed Identity." },
+  app: { t: "App Service / Container Apps", m: "VNet integrated · PE inbound", b: "Hosts the bot. Inbound via Private Endpoint, outbound via VNet integration. Managed Identity reads Key Vault references and App Config. Easy Auth gates the messaging endpoint with Entra ID." },
+  fn: { t: "Azure Functions (Premium)", m: "VNet integrated · PE inbound", b: "Scheduled ingestion from SharePoint via Microsoft Graph. Premium plan + <code>WEBSITE_VNET_ROUTE_ALL=1</code> forces all egress through the VNet. Functions storage account is also locked: PE for blob/queue/table/file, MI only." },
+  fa: { t: "Foundry Agent (BYO VNet)", m: "Standard setup · delegated subnet", b: "Agent runtime in a delegated subnet. Capability hosts point at customer Storage (thread storage), customer Cosmos (state), customer AI Search (RAG). RBAC on each. All traffic stays inside the VNet or goes via PE." },
+  nat: { t: "NAT Gateway / Azure Firewall", m: "snet-egress · only off-VNet path", b: "All outbound to SaaS (SharePoint Online, Microsoft Graph) leaves through here. Deterministic egress IP for customer firewall allow-listing. Upgrade to Azure Firewall when FQDN allow-listing is needed." },
+  spo: { t: "SharePoint Online", m: "Multi-tenant SaaS · no Private Link", b: "Source of truth for ingested documents. Reached via Microsoft Graph (<code>graph.microsoft.com</code>) using app-only Managed Identity with <code>Sites.Selected</code> permission. No private link exists for SharePoint Online - accepted exposure." },
+  search: { t: "Azure AI Search", m: "PE · S2+ · executionEnvironment = Private", b: "RAG index. Shared private links from Search to Blob and Document Intelligence let the indexer reach private sources. API keys disabled - Managed Identity and RBAC only." },
+  cosmos: { t: "Azure Cosmos DB", m: "PE · disableLocalAuth · RBAC", b: "Memory and state store. Local auth disabled, Managed Identity + Cosmos RBAC only. Optionally Network Security Perimeter for outbound governance." },
+  blob: { t: "Blob Storage", m: "PE per sub-resource · MI", b: "Document store + thread storage for Foundry agents. Private endpoint on each sub-resource (blob/file/queue/table). Shared keys disabled. Trusted services bypass enabled for AI Search indexer." },
+  foundry: { t: "AI Foundry / Azure OpenAI", m: "PE · MI · keys disabled", b: "LLM and embeddings. Public network access disabled at the account level. Two DNS zones: <code>privatelink.openai.azure.com</code> and <code>privatelink.cognitiveservices.azure.com</code>." },
+  doc: { t: "Document Intelligence", m: "PE · MI · Foundry isolation", b: "Extracts structured data from raw documents during ingest. Part of Foundry's network isolation surface; reached via PE on <code>privatelink.cognitiveservices.azure.com</code>." },
+  kv: { t: "Key Vault", m: "PE · RBAC · firewall on", b: "Holds the few secrets that cannot be replaced by an identity (e.g. SharePoint Online app credential for delegated Graph calls). RBAC mode, public network access off, trusted services bypass for Azure resources." },
+  appconf: { t: "App Configuration", m: "PE · keys disabled", b: "Runtime feature flags + non-secret config. Access keys disabled, Managed Identity + RBAC." },
+  mon: { t: "App Insights + Log Analytics", m: "AMPLS · Private Only", b: "Workspace-based App Insights linked into a Log Analytics workspace. An Azure Monitor Private Link Scope makes both ingestion and query private - <code>access mode = Private Only</code>." }
+};
+
+const FLOWS = {
+  ingest: {
+    name: "Ingest - SharePoint to AI Search",
+    tone: "tone-go",
+    edges: ["e-fn-nat","e-nat-spo","e-fn-blob","e-fn-doc","e-fn-search","e-search-blob"],
+    nodes: ["fn","nat","spo","blob","doc","search"],
+    steps: [
+      "Functions Premium fires on schedule and calls <code>graph.microsoft.com</code> via the NAT Gateway - the only path off-VNet.",
+      "Raw documents land in private Blob Storage (PE).",
+      "Document Intelligence (PE) extracts structured fields.",
+      "Functions writes the chunks into Azure AI Search (PE) - indexer runs with <code>executionEnvironment = Private</code>.",
+      "AI Search uses shared private links back to Blob and Document Intelligence; no path leaves the VNet except the controlled NAT egress to SharePoint Online."
+    ]
+  },
+  query: {
+    name: "Query - Teams to grounded answer",
+    tone: "",
+    edges: ["e-user-bf","e-bf-bs","e-bs-app","e-app-fa","e-fa-foundry","e-fa-search","e-fa-cosmos","e-fa-blob"],
+    nodes: ["user","bf","bs","app","fa","foundry","search","cosmos","blob"],
+    steps: [
+      "Teams user posts a message; the Bot Framework connector forwards it to Azure Bot Service.",
+      "Bot Service authenticates with its MI and calls the bot's messaging endpoint on App Service (private endpoint).",
+      "The bot invokes a Foundry Agent inside the delegated subnet.",
+      "The Foundry Agent uses its capability hosts: Azure OpenAI for the LLM, AI Search for RAG, Cosmos for memory, Blob for assets - every hop is a private endpoint."
+    ]
+  },
+  secrets: {
+    name: "Secrets & config - Key Vault + App Configuration",
+    tone: "tone-olive",
+    edges: ["e-app-kv","e-fn-kv","e-app-appconf","e-fn-appconf"],
+    nodes: ["app","fn","kv","appconf"],
+    steps: [
+      "Every workload uses its Managed Identity to fetch secrets from Key Vault over its PE.",
+      "App Service uses Key Vault references so secrets never appear in <code>appsettings</code>.",
+      "Runtime config (feature flags, non-secret settings) comes from App Configuration over its PE - access keys disabled.",
+      "Both vaults have public network access disabled and RBAC-only auth."
+    ]
+  },
+  telemetry: {
+    name: "Telemetry - AMPLS",
+    tone: "tone-gold",
+    edges: ["e-app-mon","e-fn-mon","e-fa-mon"],
+    nodes: ["app","fn","fa","mon"],
+    steps: [
+      "App Service, Functions, and the Foundry Agent ship logs and metrics over a private endpoint into Azure Monitor.",
+      "An <strong>Azure Monitor Private Link Scope</strong> binds the App Insights component + Log Analytics workspace + DCEs.",
+      "Both <code>ingestion</code> and <code>query</code> are set to <code>Private Only</code> - telemetry never traverses the public internet."
+    ]
+  }
+};
+
+const stage = document.getElementById('stage');
+const nodes = document.querySelectorAll('.node');
+const edges = document.querySelectorAll('.edge');
+const elbls = document.querySelectorAll('.elbl[data-e]');
+const chips = document.querySelectorAll('.chip');
+const fcap = document.getElementById('flowcap');
+
+function setFlow(key) {
+  chips.forEach(c => c.classList.toggle('on', c.dataset.flow === key));
+  edges.forEach(e => e.classList.remove('lit'));
+  elbls.forEach(l => l.classList.remove('lit'));
+  nodes.forEach(n => n.classList.remove('lit'));
+  stage.classList.remove('tone-go','tone-olive','tone-gold','tone-stop');
+  if (key === 'all') { stage.classList.remove('flowing'); fcap.classList.remove('show'); return; }
+  const f = FLOWS[key];
+  stage.classList.add('flowing');
+  if (f.tone) stage.classList.add(f.tone);
+  f.edges.forEach(id => document.getElementById(id)?.classList.add('lit'));
+  elbls.forEach(l => { if (f.edges.includes(l.dataset.e)) l.classList.add('lit'); });
+  f.nodes.forEach(k => document.querySelector(`.node[data-k="${k}"]`)?.classList.add('lit'));
+  document.getElementById('f-name').textContent = f.name;
+  document.getElementById('f-steps').innerHTML = f.steps.map(s => `<li>${s}</li>`).join('');
+  fcap.classList.add('show');
+}
+chips.forEach(c => c.addEventListener('click', () => setFlow(c.dataset.flow)));
+
+nodes.forEach(n => n.addEventListener('click', () => {
+  nodes.forEach(x => x.classList.remove('sel'));
+  n.classList.add('sel');
+  const d = DETAIL[n.dataset.k];
+  if (!d) return;
+  document.getElementById('d-title').textContent = d.t;
+  document.getElementById('d-meta').textContent = d.m;
+  document.getElementById('d-body').innerHTML = d.b;
+  document.getElementById('detail').classList.add('show');
+}));
+
+document.getElementById('themeToggle').addEventListener('click', () => {
+  const dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+});
+</script>
+</body>
+</html>
