@@ -244,11 +244,39 @@ module nsgJump 'br/public:avm/res/network/network-security-group:0.5.3' = {
     location: location
     securityRules: [
       {
+        name: 'Allow-Bastion-RDP-Inbound'
+        properties: {
+          access: 'Allow'
+          direction: 'Inbound'
+          priority: 100
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '3389'
+          description: 'Allow RDP from Bastion (inside VNet) to jump VM'
+        }
+      }
+      {
+        name: 'Allow-Bastion-SSH-Inbound'
+        properties: {
+          access: 'Allow'
+          direction: 'Inbound'
+          priority: 110
+          protocol: 'Tcp'
+          sourceAddressPrefix: 'VirtualNetwork'
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '22'
+          description: 'Allow SSH from Bastion (inside VNet) to jump VM'
+        }
+      }
+      {
         name: 'Deny-All-Inbound'
         properties: {
           access: 'Deny'
           direction: 'Inbound'
-          priority: 100
+          priority: 200
           protocol: '*'
           sourceAddressPrefix: '*'
           sourcePortRange: '*'
