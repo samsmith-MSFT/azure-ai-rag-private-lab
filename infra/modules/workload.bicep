@@ -298,16 +298,17 @@ module nsgJump 'br/public:avm/res/network/network-security-group:0.5.3' = {
         }
       }
       {
-        name: 'Deny-Internet-Outbound'
+        name: 'Allow-Internet-Outbound'
         properties: {
-          access: 'Deny'
+          access: 'Allow'
           direction: 'Outbound'
-          priority: 4095
+          priority: 4000
           protocol: '*'
           sourceAddressPrefix: '*'
           sourcePortRange: '*'
           destinationAddressPrefix: 'Internet'
           destinationPortRange: '*'
+          description: 'Allow outbound to Internet via NAT Gateway (Foundry portal, sign-in, asset loading). Data plane still goes via private endpoints.'
         }
       }
     ]
@@ -387,6 +388,7 @@ module virtualNetwork 'br/public:avm/res/network/virtual-network:0.9.0' = {
         name: 'snet-jump'
         addressPrefix: '10.0.6.0/27'
         networkSecurityGroupResourceId: nsgJump.outputs.resourceId
+        natGatewayResourceId: natGateway.outputs.resourceId
         defaultOutboundAccess: false
       }
     ]

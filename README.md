@@ -98,6 +98,7 @@ RBAC uses managed identities instead of shared keys. Storage has shared key acce
 - Bot Service Teams channel relies on the public Bot Framework connector. This accepted exposure is limited to the Teams channel path.
 - SharePoint Online has no Private Link support for this workflow. Ingestion egress goes through NAT Gateway only.
 - NAT Gateway is simpler and lower cost than Azure Firewall, but it does not provide layer 7 inspection or centralized allow-list enforcement.
+- The operator jump VM in `snet-jump` has outbound internet access through the NAT Gateway. This is required because the Microsoft Foundry portal at `https://ai.azure.com` serves its UI shell, authentication redirects, and JavaScript assets from public endpoints, even though all Foundry data plane API calls from the browser still flow over the private endpoint. The DATA plane stays private; the CONTROL plane (sign-in, portal shell, asset loading) leaves through the NAT Gateway's known public IP.
 
 ## Prerequisites
 
@@ -197,7 +198,7 @@ Source: [Ingress to Foundry](https://learn.microsoft.com/en-us/azure/architectur
 
 ### Reaching the jump VM
 
-The deployment creates a Windows 11 Pro jump VM (`Standard_D2as_v5`, Hybrid Benefit on) in the `snet-jump` subnet. It has no public IP; access is via Bastion only.
+The deployment creates a Windows 11 Pro jump VM (`Standard_D2as_v5`, Hybrid Benefit on) in the `snet-jump` subnet. It has no public IP. Inbound access is via Bastion only. Outbound traffic routes through the NAT Gateway so the VM can reach the Foundry portal, Microsoft Learn, and other public endpoints needed for day-2 operator tasks; data plane API calls to Foundry / Search / Cosmos / Storage / Key Vault still travel over the private endpoints inside the hub VNet.
 
 | Field | Value |
 | --- | --- |
