@@ -1,6 +1,9 @@
 .env
+.envrc
 *.bicepparam.local
+main.deploy.bicepparam
 *.pem
 *.pfx
 *passw[o]rd*
 .vscode/settings.json
+infra/main.json

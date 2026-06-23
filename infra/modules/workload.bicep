@@ -3,10 +3,16 @@ param environmentName string
 param location string
 param aiSearchLocation string
 param deployerObjectId string
-param botMsaAppId string
 param tenantId string
 param sharePointSiteId string
 param sharePointDriveName string
+
+@description('Windows local admin username for the jump VM.')
+param jumpVmAdminUsername string = 'azureuser'
+
+@secure()
+@description('Windows local admin password for the jump VM (min 12 chars, complexity).')
+param jumpVmAdminPassword string
 
 var uniqueSuffix = toLower(substring(uniqueString(subscription().id, resourceGroup().id, baseName, environmentName), 0, 6))
 var namePrefix = '${baseName}-${environmentName}'
@@ -601,7 +607,7 @@ module search 'br/public:avm/res/search/search-service:0.12.2' = {
   params: {
     name: searchName
     location: aiSearchLocation
-    sku: 'standard2'
+    sku: 'standard'
     replicaCount: 1
     partitionCount: 1
     disableLocalAuth: true
@@ -667,14 +673,14 @@ module foundry 'br/public:avm/ptn/ai-ml/ai-foundry:0.7.0' = {
     privateEndpointSubnetResourceId: privateEndpointSubnetId
     aiModelDeployments: [
       {
-        name: 'gpt-4o-mini'
+        name: 'gpt-5.4-mini'
         model: {
-          name: 'gpt-4o-mini'
+          name: 'gpt-5.4-mini'
           format: 'OpenAI'
-          version: '2024-07-18'
+          version: '2026-03-17'
         }
         sku: {
-          name: 'DataZoneStandard'
+          name: 'GlobalStandard'
           capacity: 50
         }
       }
@@ -686,7 +692,7 @@ module foundry 'br/public:avm/ptn/ai-ml/ai-foundry:0.7.0' = {
           version: '1'
         }
         sku: {
-          name: 'Standard'
+          name: 'GlobalStandard'
           capacity: 50
         }
       }
@@ -723,7 +729,7 @@ module foundry 'br/public:avm/ptn/ai-ml/ai-foundry:0.7.0' = {
     aiSearchConfiguration: {
       existingResourceId: search.outputs.resourceId
       privateDnsZoneResourceId: zoneSearch
-      sku: 'standard2'
+      sku: 'standard'
       replicaCount: 1
       partitionCount: 1
     }
@@ -769,17 +775,9 @@ module searchSplCosmos 'br/public:avm/res/search/search-service/shared-private-l
   }
 }
 
-module searchSplDocIntel 'br/public:avm/res/search/search-service/shared-private-link-resource:0.1.0' = {
-  name: 'search-spl-docintel'
-  params: {
-    searchServiceName: search.outputs.name
-    name: 'spl-docintel'
-    privateLinkResourceId: docIntelligence.outputs.resourceId
-    groupId: 'account'
-    requestMessage: 'Allow AI Search skills to reach private Document Intelligence.'
-    resourceRegion: location
-  }
-}
+// NOTE: search-spl-docintel removed - Doc Intelligence is not a valid Search shared-PL target
+// (Cognitive Services groupId 'account' is not supported for non-OpenAI accounts). In our flow
+// Functions calls Doc Intelligence directly via its own private endpoint, so no Search PL needed.
 
 module botPlan 'br/public:avm/res/web/serverfarm:0.7.0' = {
   name: 'bot-plan'
@@ -919,9 +917,10 @@ resource botService 'Microsoft.BotService/botServices@2022-09-15' = {
   properties: {
     displayName: botServiceName
     endpoint: 'https://${botApp.outputs.defaultHostname}/api/messages'
-    msaAppId: botMsaAppId
+    msaAppId: uamiBot.outputs.clientId
+    msaAppMSIResourceId: uamiBot.outputs.resourceId
     msaAppTenantId: tenantId
-    msaAppType: 'SingleTenant'
+    msaAppType: 'UserAssignedMSI'
   }
   tags: tags
 }
@@ -1206,6 +1205,59 @@ output searchEndpoint string = search.outputs.endpoint
 output docIntelligenceEndpoint string = docIntelligence.outputs.endpoint
 output storageAccountName string = storage.outputs.name
 output keyVaultName string = keyVault.outputs.name
+output jumpVmName string = jumpVm.outputs.name
+output jumpVmAdminUsername string = jumpVmAdminUsername
+
+// =====================================================================
+// Jump VM (Windows, Bastion-accessed) - for operator access to Foundry
+// portal and private FQDNs from inside the VNet. Hybrid Benefit ON
+// (requires qualifying Windows Client + SA / VDA license held by deployer).
+// =====================================================================
+var jumpVmName = take('vm-jump-${uniqueSuffix}', 15)
+var jumpSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, 'snet-jump')
+
+module jumpVm 'br/public:avm/res/compute/virtual-machine:0.9.0' = {
+  name: 'jump-vm'
+  params: {
+    name: jumpVmName
+    location: location
+    computerName: jumpVmName
+    vmSize: 'Standard_D2as_v5'
+    osType: 'Windows'
+    licenseType: 'Windows_Client'
+    zone: 0
+    adminUsername: jumpVmAdminUsername
+    adminPassword: jumpVmAdminPassword
+    imageReference: {
+      publisher: 'MicrosoftWindowsDesktop'
+      offer: 'Windows-11'
+      sku: 'win11-24h2-pro'
+      version: 'latest'
+    }
+    osDisk: {
+      caching: 'ReadWrite'
+      diskSizeGB: 128
+      managedDisk: {
+        storageAccountType: 'StandardSSD_LRS'
+      }
+    }
+    nicConfigurations: [
+      {
+        name: 'nic-${jumpVmName}'
+        ipConfigurations: [
+          {
+            name: 'ipconfig1'
+            subnetResourceId: jumpSubnetId
+          }
+        ]
+        networkSecurityGroupResourceId: nsgJump.outputs.resourceId
+      }
+    ]
+    encryptionAtHost: false
+    tags: tags
+  }
+  dependsOn: [ virtualNetwork ]
+}
 
 
 

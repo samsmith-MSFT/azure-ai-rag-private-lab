@@ -37,9 +37,15 @@ This lab adapts the baseline pattern in six ways:
 1. NAT Gateway instead of Azure Firewall.
 2. Bot Service for Teams instead of an App Service web UI.
 3. Functions ingestion from SharePoint plus Document Intelligence.
-4. Cross-region AI Search private endpoint, with Search in Central US and the private endpoint in the East US 2 hub VNet.
+4. Cross-region AI Search private endpoint, with Search in Central US and the private endpoint in the primary hub VNet.
 5. Azure Monitor Private Link Scope with `PrivateOnly` for monitoring.
 6. App Configuration added for centralized settings.
+
+> Region note: this lab deploys to West US 3 by default. The original baseline targets East US 2, but App Service quota in East US 2 is zero by default in many subscriptions. West US 3 has the same private-endpoint, AI, and AMPLS surface. Change `location` in `infra/main.bicepparam` if your subscription has a different region with non-zero quota.
+
+> AI Search tier note: AI Search is deployed at `standard` (S1) by default. The full baseline uses S2 to enable indexer-with-skillset over private endpoints. S2 has zero default quota in many subscriptions; S1 still supports the push ingestion pattern used here (the Function reads SharePoint, calls Document Intelligence, and writes directly to Search).
+
+> Model note: the Foundry account deploys `gpt-5.4-mini` (GlobalStandard) and `text-embedding-3-small` (GlobalStandard). Older `gpt-4o-mini` is deprecated and rejected at preflight as of 2026-03-31.
 
 ## Networking
 
@@ -110,6 +116,24 @@ az account show --query "{tenantId:tenantId, subscriptionId:id, name:name}" --ou
 
 ## Deploy
 
+### Configure parameters
+
+`infra/main.bicepparam` is a template with placeholders. Copy it to `infra/main.deploy.bicepparam` (which is git-ignored) and fill in:
+
+| Param | Notes |
+| --- | --- |
+| `deployerObjectId` | Run `az ad signed-in-user show --query id -o tsv` to get yours. |
+| `tenantId` | Your Microsoft Entra tenant GUID. |
+| `sharePointSiteId` | The GUID of your SharePoint Online site (Graph: `GET /sites/<host>:/sites/<name>?$select=id`). Leave empty if you will wire ingestion later. |
+| `jumpVmAdminPassword` | Strong Windows password, 12-123 chars, with complexity. Stored locally only; never push this file. |
+| `location` | Defaults to `westus3`. Change if your subscription has App Service quota in another region. |
+| `aiSearchLocation` | Defaults to `centralus`. Service-only - the private endpoint is created in the hub VNet automatically. |
+
+```bash
+cp infra/main.bicepparam infra/main.deploy.bicepparam
+# edit infra/main.deploy.bicepparam in your editor
+```
+
 ### Run in GitHub Codespaces
 
 1. Open the repo in Codespaces.
@@ -123,9 +147,9 @@ az account set --subscription <your-subscription-id>
 3. Review and deploy:
 
 ```bash
-az deployment sub what-if   --location eastus2   --template-file infra/main.bicep   --parameters infra/main.bicepparam
+az deployment sub what-if --location westus3 --template-file infra/main.bicep --parameters infra/main.deploy.bicepparam
 
-az deployment sub create   --location eastus2   --template-file infra/main.bicep   --parameters infra/main.bicepparam
+az deployment sub create --location westus3 --template-file infra/main.bicep --parameters infra/main.deploy.bicepparam
 ```
 
 ### Local bash
@@ -135,27 +159,33 @@ git clone https://github.com/samsmith-MSFT/azure-ai-rag-private-lab.git
 cd azure-ai-rag-private-lab
 az login --tenant <your-tenant-id>
 az account set --subscription <your-subscription-id>
+cp infra/main.bicepparam infra/main.deploy.bicepparam
+# edit infra/main.deploy.bicepparam to fill placeholders
 ```
 
 Run the what-if gate first:
 
 ```bash
-az deployment sub what-if   --location eastus2   --template-file infra/main.bicep   --parameters infra/main.bicepparam
+az deployment sub what-if --location westus3 --template-file infra/main.bicep --parameters infra/main.deploy.bicepparam
 ```
 
 If the what-if output is expected, deploy:
 
 ```bash
-az deployment sub create   --location eastus2   --template-file infra/main.bicep   --parameters infra/main.bicepparam
+az deployment sub create --location westus3 --template-file infra/main.bicep --parameters infra/main.deploy.bicepparam
 ```
+
+### Known issue: Foundry account / PE race
+
+The AVM `avm/ptn/ai-ml/ai-foundry` pattern occasionally fails on the first apply with `AccountProvisioningStateInvalid` because the pattern fires the Foundry account private endpoint before the account has finished provisioning. The fix is to re-run `az deployment sub create` with the same parameters; the deployment is idempotent and the second run picks up where the first one stopped. Expect to need one re-run on a fresh deploy.
 
 ## Validation
 
 - From a VM in the VNet, run `nslookup <service-name>.search.windows.net` and confirm it resolves to a private IP.
-- Run `az resource list --resource-group rg-ailab-rag-eastus2 --query "[].{name:name,type:type}" --output table`.
-- Check that platform resources have `publicNetworkAccess` disabled where supported.
+- Run `az resource list --resource-group rg-ailab-rag-westus3 --query "[].{name:name,type:type}" --output table`.
+- Confirm `az resource list --resource-group rg-ailab-rag-westus3 --query "[?properties.publicNetworkAccess=='Enabled']"` returns an empty list (the Foundry account is the documented exception - see Privatization Compromises).
 - Confirm Storage has shared key access disabled.
-- Confirm AI Search is in `centralus` and its private endpoint is in the East US 2 hub VNet.
+- Confirm AI Search is in `centralus` and its private endpoint is in the primary hub VNet.
 - Confirm AMPLS ingestion and query access modes are `PrivateOnly`.
 - Confirm the Function app can reach SharePoint through NAT Gateway and can write to AI Search.
 
@@ -165,9 +195,39 @@ az deployment sub create   --location eastus2   --template-file infra/main.bicep
 
 Source: [Ingress to Foundry](https://learn.microsoft.com/en-us/azure/architecture/ai-ml/architecture/baseline-microsoft-foundry-chat#ingress-to-foundry)
 
-Use Azure Bastion to connect to the jump VM, then access the Foundry portal over the private endpoint path. Create the Foundry agent and capability hosts after deployment if they were not fully created by the infrastructure module. Update the bot application setting `AGENT_ID` with the created Foundry agent ID.
+### Reaching the jump VM
 
-Register the Teams channel in Azure Bot Service after deployment. Use the placeholder `botMsaAppId` value in `infra/main.bicepparam` for the application/client ID created for the bot.
+The deployment creates a Windows 11 Pro jump VM (`Standard_D2as_v5`, Hybrid Benefit on) in the `snet-jump` subnet. It has no public IP; access is via Bastion only.
+
+| Field | Value |
+| --- | --- |
+| VM | `vm-jump-<suffix>` |
+| Bastion host | `bas-ragbot-lab-<suffix>` |
+| Username | The value you set for `jumpVmAdminUsername` (default `azureuser`) |
+| Password | The value you set for `jumpVmAdminPassword` in `infra/main.deploy.bicepparam` |
+
+Connect via the portal (Bastion blade > Connect > RDP) or via the Bastion native RDP CLI extension:
+
+```bash
+az network bastion rdp \
+  --name bas-ragbot-lab-<suffix> \
+  --resource-group rg-ailab-rag-westus3 \
+  --target-resource-id $(az vm show -g rg-ailab-rag-westus3 -n vm-jump-<suffix> --query id -o tsv)
+```
+
+> Hybrid Benefit: the VM is provisioned with `licenseType: Windows_Client`. By deploying this template you attest that you hold a qualifying Windows 10/11 Enterprise license with Software Assurance, or a Windows VDA per-user subscription. See the [Windows Client Azure Hybrid Benefit terms](https://learn.microsoft.com/en-us/azure/virtual-machines/windows/windows-desktop-multitenant-hosting-deployment) before enabling.
+
+### Post-deploy steps
+
+Use Azure Bastion to connect to the jump VM, then access the Foundry portal at `https://ai.azure.com` over the private endpoint path. Create the Foundry agent and capability hosts after deployment if they were not fully created by the infrastructure module. Update the bot application setting `AGENT_ID` with the created Foundry agent ID.
+
+Register the Teams channel after deployment:
+
+```bash
+az bot msteams create --name bot-ragbot-lab-<suffix> --resource-group rg-ailab-rag-westus3
+```
+
+The Bot Service uses `UserAssignedMSI` identity, so there is no app registration secret to manage; the bot's identity is the `uami-bot` user-assigned managed identity.
 
 Grant SharePoint `Sites.Selected` permissions with PnP PowerShell from an operator workstation:
 
@@ -187,7 +247,7 @@ The deployment creates Log Analytics, Application Insights, and AMPLS. Ingestion
 ## Teardown
 
 ```bash
-az group delete --name rg-ailab-rag-eastus2 --yes --no-wait
+az group delete --name rg-ailab-rag-westus3 --yes --no-wait
 ```
 
 Key Vault uses purge protection. If you need to reuse the same vault name, purge the deleted vault after the retention period and only when your governance policy allows it.
