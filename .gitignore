@@ -7,6 +7,7 @@ main.deploy.bicepparam
 *passw[o]rd*
 .vscode/settings.json
 infra/main.json
+.secrets.baseline
 
 # Functions build artifacts
 __pycache__/
