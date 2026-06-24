@@ -220,22 +220,15 @@ az network bastion rdp \
 
 ### Post-deploy steps
 
-Use Azure Bastion to connect to the jump VM, then access the Foundry portal at `https://ai.azure.com` over the private endpoint path. Create the Foundry agent and capability hosts after deployment if they were not fully created by the infrastructure module. Update the bot application setting `AGENT_ID` with the created Foundry agent ID.
+The Bicep deployment provisions infrastructure and capability hosts. **Several manual configuration steps remain before the RAG agent can answer questions.** See [**POST-DEPLOY.md**](./POST-DEPLOY.md) for the complete runbook: RBAC grants, SharePoint site setup, AI Search index creation, Foundry shared private links, Function App publishing from the jump VM, agent + Knowledge Base creation, and end-to-end validation. Read it before connecting to anything.
 
-Register the Teams channel after deployment:
+Quick path:
 
-```bash
-az bot msteams create --name bot-ragbot-lab-<suffix> --resource-group rg-ailab-rag-westus3
-```
+1. Connect to the jump VM via Azure Bastion (credentials in `infra/main.deploy.bicepparam`, gitignored).
+2. Follow [POST-DEPLOY.md](./POST-DEPLOY.md) sections 1 through 13.
+3. Validate with the 6 sample prompts in section 13.
 
-The Bot Service uses `UserAssignedMSI` identity, so there is no app registration secret to manage; the bot's identity is the `uami-bot` user-assigned managed identity.
-
-Grant SharePoint `Sites.Selected` permissions with PnP PowerShell from an operator workstation:
-
-```powershell
-Connect-PnPOnline -Url "https://<your-tenant>.sharepoint.com/sites/<your-site>" -Interactive
-Grant-PnPAzureADAppSitePermission -AppId "<function-app-managed-identity-client-id>" -DisplayName "RAG ingestion" -Site "https://<your-tenant>.sharepoint.com/sites/<your-site>" -Permissions Read
-```
+> Hybrid Benefit reminder: by deploying this template you attest you hold a qualifying Windows 10/11 Enterprise license with Software Assurance or a Windows VDA per-user subscription. See the [Windows Client Azure Hybrid Benefit terms](https://learn.microsoft.com/en-us/azure/virtual-machines/windows/windows-desktop-multitenant-hosting-deployment).
 
 ## Observability
 

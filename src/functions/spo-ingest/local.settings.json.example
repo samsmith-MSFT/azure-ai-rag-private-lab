@@ -1,0 +1,23 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage__accountName": "<storage-account-name>",
+    "AzureWebJobsStorage__blobServiceUri": "https://<storage-account-name>.blob.core.windows.net",
+    "AzureWebJobsStorage__queueServiceUri": "https://<storage-account-name>.queue.core.windows.net",
+    "AzureWebJobsStorage__tableServiceUri": "https://<storage-account-name>.table.core.windows.net",
+    "AZURE_CLIENT_ID": "<user-assigned-managed-identity-client-id>",
+    "AZURE_SEARCH_ENDPOINT": "https://<search-service>.search.windows.net",
+    "AZURE_SEARCH_INDEX": "ragdocs",
+    "DOC_INTELLIGENCE_ENDPOINT": "https://<document-intelligence>.cognitiveservices.azure.com/",
+    "BLOB_STORAGE_ACCOUNT": "<storage-account-name>",
+    "SPO_SITE_ID": "<tenant>.sharepoint.com,<site-collection-id>,<web-id>",
+    "SPO_DRIVE_NAME": "Documents",
+    "GRAPH_TENANT_ID": "<tenant-id>",
+    "AZURE_FOUNDRY_ENDPOINT": "https://<foundry-openai-resource>.openai.azure.com/",
+    "EMBEDDING_DEPLOYMENT_NAME": "text-embedding-3-small",
+    "INGEST_QUEUE_NAME": "ingest-queue",
+    "INGEST_MANIFEST_CONTAINER": "rag-content",
+    "INGEST_MANIFEST_BLOB": "ingest-state/manifest.json"
+  }
+}

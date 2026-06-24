@@ -7,3 +7,17 @@ main.deploy.bicepparam
 *passw[o]rd*
 .vscode/settings.json
 infra/main.json
+
+# Functions build artifacts
+__pycache__/
+*.pyc
+.python_packages/
+bin/
+obj/
+
+# Bicep build output (regenerable)
+infra/**/*.json
+!infra/**/*.bicepparam
+
+# Local settings
+local.settings.json

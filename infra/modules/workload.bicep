@@ -50,6 +50,7 @@ var zoneCognitive = resourceId('Microsoft.Network/privateDnsZones', 'privatelink
 var zoneSearch = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.search.windows.net')
 var zoneCosmos = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.documents.azure.com')
 var zoneBlob = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.blob.${environment().suffixes.storage}')
+var zoneQueue = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.queue.${environment().suffixes.storage}')
 var zoneVault = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.vaultcore.azure.net')
 var zoneAppConfig = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azconfig.io')
 var zoneWeb = resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')
@@ -407,6 +408,7 @@ module privateDnsZones 'br/public:avm/ptn/network/private-link-private-dns-zones
       'privatelink.search.windows.net'
       'privatelink.documents.azure.com'
       'privatelink.blob.${environment().suffixes.storage}'
+      'privatelink.queue.${environment().suffixes.storage}'
       'privatelink.vaultcore.azure.net'
       'privatelink.azconfig.io'
       'privatelink.azurewebsites.net'
@@ -564,7 +566,17 @@ module storage 'br/public:avm/res/storage/storage-account:0.32.1' = {
       {
         principalId: uamiIngestion.outputs.principalId
         principalType: 'ServicePrincipal'
-        roleDefinitionIdOrName: 'Storage Blob Data Contributor'
+        roleDefinitionIdOrName: 'Storage Blob Data Owner'
+      }
+      {
+        principalId: uamiIngestion.outputs.principalId
+        principalType: 'ServicePrincipal'
+        roleDefinitionIdOrName: 'Storage Queue Data Contributor'
+      }
+      {
+        principalId: uamiIngestion.outputs.principalId
+        principalType: 'ServicePrincipal'
+        roleDefinitionIdOrName: 'Storage Table Data Contributor'
       }
       {
         principalId: uamiFoundry.outputs.principalId
@@ -750,6 +762,32 @@ module foundry 'br/public:avm/ptn/ai-ml/ai-foundry:0.7.0' = {
           principalType: 'ServicePrincipal'
           roleDefinitionIdOrName: 'Cognitive Services User'
         }
+        // Function App ingest MI needs Cog Services User + OpenAI User on Foundry to
+        // call the embedding model from the queue trigger. Without these grants the
+        // ProcessDocument function fails with 401 PermissionDenied and messages go to poison.
+        {
+          principalId: uamiIngestion.outputs.principalId
+          principalType: 'ServicePrincipal'
+          roleDefinitionIdOrName: 'Cognitive Services User'
+        }
+        {
+          principalId: uamiIngestion.outputs.principalId
+          principalType: 'ServicePrincipal'
+          roleDefinitionIdOrName: 'Cognitive Services OpenAI User'
+        }
+        // Search service MI needs Cog Services User + OpenAI User on Foundry so the
+        // Foundry IQ Knowledge Base embedding call (Search -> Foundry over the SPL)
+        // is authorized. Without these grants the playground returns 401 Unauthorized.
+        {
+          principalId: search.outputs.systemAssignedMIPrincipalId!
+          principalType: 'ServicePrincipal'
+          roleDefinitionIdOrName: 'Cognitive Services User'
+        }
+        {
+          principalId: search.outputs.systemAssignedMIPrincipalId!
+          principalType: 'ServicePrincipal'
+          roleDefinitionIdOrName: 'Cognitive Services OpenAI User'
+        }
       ]
     }
     keyVaultConfiguration: {
@@ -808,6 +846,81 @@ module searchSplCosmos 'br/public:avm/res/search/search-service/shared-private-l
 // NOTE: search-spl-docintel removed - Doc Intelligence is not a valid Search shared-PL target
 // (Cognitive Services groupId 'account' is not supported for non-OpenAI accounts). In our flow
 // Functions calls Doc Intelligence directly via its own private endpoint, so no Search PL needed.
+
+// AI Search -> Foundry shared private links: REQUIRED for the Foundry IQ Knowledge Base
+// embedding call when Foundry has publicNetworkAccess=Disabled. Two SPLs needed because
+// Foundry (kind=AIServices) exposes both the legacy OpenAI host (*.openai.azure.com) and
+// the multi-service host (*.cognitiveservices.azure.com). The Knowledge Base may call either.
+//
+// IMPORTANT: SPLs to Foundry are created out-of-band (POST-DEPLOY.md "Step 7") rather than
+// in Bicep. The Search RP only permits updates to the `requestMessage` property after creation,
+// so any subsequent Bicep deploy that re-PUTs the SPL with the same params fails with
+// "When updating a shared private link resource, only 'requestMessage' property is allowed
+// to be modified". Keeping SPLs as a one-shot az rest PUT avoids this drift trap.
+//
+// The Bicep-managed SPLs (spl-blob, spl-cosmos) above target resource types whose RP behaves
+// correctly on idempotent PUT, so they remain in IaC.
+
+// Queue private endpoint + DNS zone for the Function App's ingest queue.
+// The Foundry AVM pattern only creates the blob PE on the shared storage account;
+// the Function App's queue trigger needs a separate queue PE because storage
+// publicNetworkAccess=Disabled blocks the public queue endpoint.
+module storageQueuePE 'br/public:avm/res/network/private-endpoint:0.11.0' = {
+  name: 'pe-storage-queue'
+  params: {
+    name: 'pe-${storageName}-queue'
+    location: location
+    subnetResourceId: privateEndpointSubnetId
+    privateLinkServiceConnections: [
+      {
+        name: 'conn-queue'
+        properties: {
+          privateLinkServiceId: storage.outputs.resourceId
+          groupIds: [ 'queue' ]
+        }
+      }
+    ]
+    privateDnsZoneGroup: {
+      privateDnsZoneGroupConfigs: [
+        {
+          privateDnsZoneResourceId: zoneQueue
+        }
+      ]
+    }
+    tags: tags
+  }
+  dependsOn: [
+    privateDnsZones
+  ]
+}
+
+// Cosmos full-account-scope grant for Foundry project MI.
+// The AVM Foundry pattern only grants the project MI on 3 specific containers
+// (system-thread-message-store, thread-message-store, agent-entity-store). Newer
+// agent containers like 'agent-definitions-v1' are out of scope and the agent
+// creation API returns 401 Unauthorized. Account-scope grant covers all current
+// and future containers under the cosmos account.
+resource cosmosAccountExisting 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
+  name: cosmosName
+}
+
+resource foundryProjectExisting 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' existing = {
+  name: '${foundryAccountName}/${foundryProjectName}'
+}
+
+resource cosmosAccountScopeGrantForFoundryProject 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-11-15' = {
+  parent: cosmosAccountExisting
+  name: guid(cosmosName, foundryProjectName, 'cosmos-account-scope-data-contributor')
+  properties: {
+    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosName, '00000000-0000-0000-0000-000000000002')
+    principalId: foundryProjectExisting.identity.principalId
+    scope: cosmosAccountExisting.id
+  }
+  dependsOn: [
+    foundry
+    cosmos
+  ]
+}
 
 module botPlan 'br/public:avm/res/web/serverfarm:0.7.0' = {
   name: 'bot-plan'
